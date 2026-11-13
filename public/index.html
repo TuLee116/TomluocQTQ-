@@ -13,6 +13,7 @@
   --bg:#f3f5f8; --surface:#ffffff; --ink:#15202e; --muted:#5b6778; --line:#d6dce5;
   --accent:#e8a317; --accent-ink:#4a3200;
   --warn:#c2410c; --warn-bg:#fff1e8;
+  --hl3:#e0181b; /* màu chữ {{{ … }}} */
   --c1:#2563a8; --c2:#0f8a7e; --c3:#7a4fc0; --c4:#c23b4f; --c5:#b26a00; --c6:#4b6b2e; --c7:#0e7490; --c8:#c2410c;
   --nv:#1e3a6e; --tl:#0f8a7e; --grad:linear-gradient(135deg,#14214a 0%,#1e3a6e 40%,#0f6f78 78%,#0f8a7e 100%); --c2b:#1d7f4e; --c9:#8a3ffc; --c10:#a0522d; --c11:#1f4fb8; --c12:#be185d;
   --display:"Archivo","Be Vietnam Pro",system-ui,sans-serif;
@@ -195,6 +196,7 @@ body.hide .leaves canvas.tc{cursor:pointer}
 .k{font-weight:700;color:var(--dc);font-variant-numeric:tabular-nums;border-radius:4px;padding:0 2px}
 body.hide .k{color:transparent;background:color-mix(in srgb,var(--dc) 22%,transparent);cursor:pointer;user-select:none}
 body.hide .k.show{color:var(--dc);background:none}
+.hl3{font-weight:700;color:var(--hl3)}
 .wtag{display:inline-block;font-size:11px;font-weight:700;padding:0 6px;border-radius:6px;border:1px solid var(--warn);background:none;color:var(--warn);vertical-align:1px;margin-right:4px}
 .src{font-size:12px;color:var(--muted);margin:8px 0 0 18px}
 .totop{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:max(18px,env(safe-area-inset-bottom,0px));z-index:6;width:42px;height:42px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);font-size:18px;box-shadow:0 8px 18px -8px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .2s}
@@ -608,7 +610,7 @@ body.superuser .pvpages{-webkit-user-select:auto;user-select:auto}
 <div class="fdlg" id="edDlg" hidden><div class="fbox edbox"><button class="fx" id="edX" aria-label="Đóng">✕</button>
   <div class="fdh"><small>Chỉnh sửa nội dung</small><b id="edTitle"></b></div>
   <textarea id="edTa" rows="4" placeholder="Nhập nội dung ý…"></textarea>
-  <div class="edhint" id="edHint">Mẹo: đặt chữ trong <code>{{ }}</code> để in đậm màu, ví dụ <code>Trả lương ngày {{25}} hằng tháng</code>. Xuống dòng (Enter) = dòng ghi chú phụ bên dưới. Ctrl+Enter để lưu.</div>
+  <div class="edhint" id="edHint">Mẹo: đặt chữ trong <code>{{ }}</code> để in đậm màu, ví dụ <code>Trả lương ngày {{25}} hằng tháng</code>; đặt trong <code>{{{ }}}</code> để tô <span class="hl3">màu đỏ</span> nổi bật, ví dụ <code>{{{ Bắt buộc ký duyệt }}}</code>. Xuống dòng (Enter) = dòng ghi chú phụ bên dưới. Ctrl+Enter để lưu.</div>
   <div class="eddel" id="edDel" hidden></div>
   <div class="edact"><button class="btn" id="edCancel">Huỷ</button><button class="btn pri" id="edOk">Lưu</button></div>
 </div></div>
@@ -645,7 +647,7 @@ var esc=function(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(
 function fmt(raw){
   var s=raw,cls="",pre="";
   if(s.charAt(0)==="!"){s=s.slice(1);cls="w";pre='<span class="wtag">⚠ dễ nhầm</span>';}
-  var parts=s.split(" >> ").map(function(p){return esc(p).replace(/\{\{(.+?)\}\}/g,'<span class="k" tabindex="0">$1</span>');});
+  var parts=s.split(" >> ").map(function(p){return esc(p).replace(/\{\{\{\s*(.+?)\s*\}\}\}/g,'<span class="hl3">$1</span>').replace(/\{\{(.+?)\}\}/g,'<span class="k" tabindex="0">$1</span>');});
   var html=pre+parts[0];if(parts[1])html+='<span class="sl">'+parts[1]+'</span>';
   return {html:html,cls:cls,warn:cls==="w"};
 }
@@ -1062,18 +1064,18 @@ var RAW=[],BUILT_ROLE=null;
 function TXT_IMG(){return !(ME&&ME.role==="super");}
 var TI=(function(){
   var io=null,rendered=new Set(),fontsReady=false,lastW=0;
-  function toks(str){var out=[],re=/\{\{(.+?)\}\}/g,last=0,m,kid=0;
-    while((m=re.exec(str))){if(m.index>last)out.push({t:str.slice(last,m.index)});out.push({t:m[1],k:++kid});last=re.lastIndex;}
+  function toks(str){var out=[],re=/\{\{\{\s*(.+?)\s*\}\}\}|\{\{(.+?)\}\}/g,last=0,m,kid=0;
+    while((m=re.exec(str))){if(m.index>last)out.push({t:str.slice(last,m.index)});out.push(m[1]!=null?{t:m[1],h:1}:{t:m[2],k:++kid});last=re.lastIndex;}
     if(last<str.length)out.push({t:str.slice(last)});return out;}
   function parse(raw){var w=false,s=raw;if(s.charAt(0)==="!"){w=true;s=s.slice(1);}var p=s.split(" >> ");return {w:w,main:toks(p[0]),sub:p[1]?toks(p[1]):null};}
-  function pieces(tk){var out=[];tk.forEach(function(t){t.t.split(/(\s+)/).forEach(function(w){if(w)out.push({t:w,k:t.k||0,sp:/^\s+$/.test(w)});});});return out;}
+  function pieces(tk){var out=[];tk.forEach(function(t){t.t.split(/(\s+)/).forEach(function(w){if(w)out.push({t:w,k:t.k||0,h:t.h||0,sp:/^\s+$/.test(w)});});});return out;}
   function layout(ctx,ps,maxW,x0,fontN,fontB){var lines=[[]],x=x0,first=true;
-    ps.forEach(function(p){ctx.font=p.k?fontB:fontN;var w=ctx.measureText(p.t).width;
+    ps.forEach(function(p){ctx.font=(p.k||p.h)?fontB:fontN;var w=ctx.measureText(p.t).width;
       if(p.sp){if(x>x0||!first){lines[lines.length-1].push({p:p,x:x,w:w});x+=w;}return;}
       if(x+w>maxW&&x>x0&&!(/^[;,.:!?)\]%…]/.test(p.t)&&x+w<=maxW+14)){var L=lines[lines.length-1];while(L.length&&L[L.length-1].p.sp)L.pop();lines.push([]);x=x0;}
       if(w>maxW-x0){ /* từ quá dài: cắt theo ký tự */
-        var chunk="";for(var i=0;i<p.t.length;i++){var c=chunk+p.t[i];if(ctx.measureText(c).width>maxW-x&&chunk){lines[lines.length-1].push({p:{t:chunk,k:p.k},x:x,w:ctx.measureText(chunk).width});lines.push([]);x=x0;chunk=p.t[i];}else chunk=c;}
-        if(chunk){var cw=ctx.measureText(chunk).width;lines[lines.length-1].push({p:{t:chunk,k:p.k},x:x,w:cw});x+=cw;}
+        var chunk="";for(var i=0;i<p.t.length;i++){var c=chunk+p.t[i];if(ctx.measureText(c).width>maxW-x&&chunk){lines[lines.length-1].push({p:{t:chunk,k:p.k,h:p.h},x:x,w:ctx.measureText(chunk).width});lines.push([]);x=x0;chunk=p.t[i];}else chunk=c;}
+        if(chunk){var cw=ctx.measureText(chunk).width;lines[lines.length-1].push({p:{t:chunk,k:p.k,h:p.h},x:x,w:cw});x+=cw;}
       } else {lines[lines.length-1].push({p:p,x:x,w:w});x+=w;}
       first=false;});
     return lines;}
@@ -1081,7 +1083,7 @@ var TI=(function(){
     var cv=li.firstChild;if(!cv||!cv.getContext)return;var raw=RAW[+li.dataset.r];if(raw==null)return;
     var cs=getComputedStyle(li),W=Math.floor(li.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight));if(W<=0)return;
     var dpr=window.devicePixelRatio||1,fam=cs.fontFamily,fs=parseFloat(cs.fontSize)||14.5,lh=Math.round(fs*1.55);
-    var dc=cs.getPropertyValue("--dc").trim()||"#2563a8",ink=cs.color,muted=getComputedStyle(document.body).getPropertyValue("--muted").trim()||"#5b6778",line=getComputedStyle(document.body).getPropertyValue("--line").trim()||"#d6dce5",warn=getComputedStyle(document.body).getPropertyValue("--warn").trim()||"#c2410c";
+    var dc=cs.getPropertyValue("--dc").trim()||"#2563a8",ink=cs.color,muted=getComputedStyle(document.body).getPropertyValue("--muted").trim()||"#5b6778",line=getComputedStyle(document.body).getPropertyValue("--line").trim()||"#d6dce5",warn=getComputedStyle(document.body).getPropertyValue("--warn").trim()||"#c2410c",hl3=getComputedStyle(document.body).getPropertyValue("--hl3").trim()||"#e0181b";
     var fN="400 "+fs+"px "+fam,fB="700 "+fs+"px "+fam,sfs=fs-1,sN="400 "+sfs+"px "+fam,sB="700 "+sfs+"px "+fam,slh=Math.round(sfs*1.5);
     var d=parse(raw),ctx=cv.getContext("2d");ctx.font=fN;
     var x0=0;if(d.w){ctx.font="700 11px "+fam;x0=ctx.measureText("⚠ dễ nhầm").width+16;}
@@ -1093,7 +1095,7 @@ var TI=(function(){
     function paint(lines,y0,step,nF,bF,col,tag){lines.forEach(function(L,i){var y=y0+i*step+step/2;L.forEach(function(it){
       var p=it.p;if(p.sp)return;var key=p.k?tag+p.k:0;
       if(p.k&&hide&&!shown[key]){ctx.globalAlpha=.25;ctx.fillStyle=dc;rr(ctx,it.x-1,y-step/2+3,it.w+2,step-6,4);ctx.fill();ctx.globalAlpha=1;}
-      else{ctx.font=p.k?bF:nF;ctx.fillStyle=p.k?dc:col;ctx.fillText(p.t,it.x,y+0.5);}
+      else{ctx.font=(p.k||p.h)?bF:nF;ctx.fillStyle=p.k?dc:p.h?hl3:col;ctx.fillText(p.t,it.x,y+0.5);}
       if(p.k)hits.push({x:it.x-2,y:y-step/2,w:it.w+4,h:step,key:key});});});}
     paint(L1,0,lh,fN,fB,ink,"m");
     if(L2.length){var y2=L1.length*lh+6;ctx.fillStyle=line;ctx.fillRect(0,y2,2,L2.length*slh);paint(L2,y2,slh,sN,sB,muted,"s");}
@@ -1321,7 +1323,7 @@ $("main").addEventListener("click",function(e){
   var where=gno(d)+"."+(j+1)+" "+b.t+" · "+d.dept;
   if(act==="add")openEd("Thêm ý – "+where,"",function(v){list.push(v);setItems(id,j,list);});
   else if(act==="ed")openEd("Sửa ý – "+where,list[i].replace(/ >> /g,"\n"),function(v){list[i]=v;setItems(id,j,list);});
-  else if(act==="del")openEd("Xoá ý này? – "+where,list[i].replace(/\{\{|\}\}/g,"").replace(/ >> /g," · "),function(){list.splice(i,1);setItems(id,j,list);},true);
+  else if(act==="del")openEd("Xoá ý này? – "+where,list[i].replace(/\{\{\{\s*|\s*\}\}\}|\{\{|\}\}/g,"").replace(/ >> /g," · "),function(){list.splice(i,1);setItems(id,j,list);},true);
   else if(act==="up"&&i>0){var t=list[i-1];list[i-1]=list[i];list[i]=t;setItems(id,j,list);}
   else if(act==="dn"&&i<list.length-1){var t2=list[i+1];list[i+1]=list[i];list[i]=t2;setItems(id,j,list);}
 },true);
@@ -1377,7 +1379,7 @@ function keyLabel(k){var t=k.slice(0,2),r=k.slice(2),p=r.split("-"),j=+p.pop(),i
   if(t==="s:"){var g=DEPTS.filter(function(x){return x.id===r;})[0];return "Cấu trúc mục lục nhóm "+(g?gno(g)+". "+g.name+" · "+g.dept:r)+" (thêm / sửa / di chuyển mục)";}
   if(d){var b=d.branches[j];return (t==="i:"?"Nội dung mục ":"Tên mục ")+gno(d)+"."+(j+1)+" "+(ORIG["b:"+id+"-"+j]||(b&&b.t)||"")+" · "+d.dept;}
   return k;}
-function plain(x){return String(x).replace(/\{\{|\}\}/g,"").replace(/ >> /g," · ");}
+function plain(x){return String(x).replace(/\{\{\{\s*|\s*\}\}\}|\{\{|\}\}/g,"").replace(/ >> /g," · ");}
 function diffHTML(k,before,after){
   if(k==="s:__g"){var gl=function(e){var o=ORIGD[e.id];return (o?o.name:(e.name||e.id))+" · "+e.dept;},nk=function(e){return e.id!=="__k";},bg=(before||[]).filter(nk).map(gl),ag=(after||[]).filter(nk).map(gl);
     return '<ol class="dxl">'+ag.map(function(x,i){var mv=bg.indexOf(x)>=0&&bg.indexOf(x)!==i;return '<li class="'+(bg.indexOf(x)<0?"add":"")+'">'+(bg.indexOf(x)<0?"＋ ":mv?"↕ ":"")+esc(x)+'</li>';}).join("")+
