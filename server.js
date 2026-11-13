@@ -1,0 +1,194 @@
+/* TMN Quy trình – máy chủ Node (không cần thư viện ngoài)
+ * - Phục vụ trang tĩnh trong public/ (nội dung đã mã hoá sẵn)
+ * - API lưu dữ liệu đồng bộ (thay cho kho db của Claude): /api/doc
+ * - Phiên đăng nhập 1 thiết bị: /api/room
+ * - Tệp tải lên: /api/assets, /_blob/:id
+ */
+"use strict";
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const PORT = parseInt(process.env.PORT || "3000", 10);
+const PUB = path.join(__dirname, "public");
+const DATA = path.resolve(process.env.DATA_DIR || path.join(__dirname, "data"));
+const DOCS = path.join(DATA, "docs");
+const BLOBS = path.join(DATA, "blobs");
+fs.mkdirSync(DOCS, { recursive: true });
+fs.mkdirSync(BLOBS, { recursive: true });
+
+const sha = (s) => crypto.createHash("sha256").update(s, "utf8").digest("hex");
+const TOK_SUPER = process.env.SUPER_PASS ? sha("tmn-w|" + process.env.SUPER_PASS) : null;
+const TOK_ADMIN = process.env.ADMIN_PASS ? sha("tmn-w|" + process.env.ADMIN_PASS) : null;
+if (!TOK_SUPER) console.warn("[!] Chưa đặt SUPER_PASS – sẽ không ai lưu được nội dung.");
+
+function roleOf(req) {
+  const t = String(req.headers["x-tmn-w"] || "");
+  if (!t || t.length !== 64) return null;
+  const eq = (a, b) => a && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  if (eq(TOK_SUPER, t)) return "super";
+  if (eq(TOK_ADMIN, t)) return "admin";
+  return null;
+}
+
+/* ---------- Quyền ghi ---------- */
+function canWrite(role, p) {
+  if (!role) return false;
+  if (role === "super") return true;
+  if (role === "admin") return p === "content/accounts" || /^accreq\/[\w-]+$/.test(p);
+  return false;
+}
+const PATH_RE = /^(content|accreq)\/[\w-]{1,64}$/;
+const docFile = (p) => path.join(DOCS, p.replace("/", "__") + ".json");
+
+/* ---------- Tiện ích ---------- */
+function send(res, code, body, headers) {
+  const h = Object.assign({ "Cache-Control": "no-store" }, headers || {});
+  if (body !== undefined && typeof body !== "string" && !Buffer.isBuffer(body)) {
+    body = JSON.stringify(body);
+    h["Content-Type"] = "application/json; charset=utf-8";
+  }
+  res.writeHead(code, h);
+  res.end(body);
+}
+function readBody(req, limit) {
+  return new Promise((ok, fail) => {
+    const chunks = []; let n = 0;
+    req.on("data", (c) => { n += c.length; if (n > limit) { fail(Object.assign(new Error("too_large"), { code: 413 })); req.destroy(); } else chunks.push(c); });
+    req.on("end", () => ok(Buffer.concat(chunks)));
+    req.on("error", fail);
+  });
+}
+function writeAtomic(file, buf) {
+  const tmp = file + "." + process.pid + "." + Date.now() + ".tmp";
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
+}
+
+/* ---------- Phòng (phiên đăng nhập) ---------- */
+const ROOM = new Map(); // conn -> {presence, t}
+const ROOM_TTL = 30000;
+function roomPeers(me) {
+  const now = Date.now(), out = [];
+  for (const [k, v] of ROOM) {
+    if (now - v.t > ROOM_TTL) { ROOM.delete(k); continue; }
+    if (k !== me) out.push({ presence: v.presence, kind: "viewer", sameTab: false });
+  }
+  return out;
+}
+
+/* ---------- Trang tĩnh ---------- */
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".mjs": "application/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".map": "application/json" };
+let INDEX = null;
+function indexHtml() {
+  if (INDEX) return INDEX;
+  let h = fs.readFileSync(path.join(PUB, "index.html"), "utf8");
+  const tag = '<script src="/claude-shim.js"></script>';
+  const i = h.search(/<script[\s>]/i);
+  h = i >= 0 ? h.slice(0, i) + tag + h.slice(i) : h.replace(/<\/head>/i, tag + "</head>");
+  INDEX = Buffer.from(h, "utf8");
+  return INDEX;
+}
+const SEC = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "SAMEORIGIN",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+function serveStatic(req, res, pathname) {
+  if (pathname === "/" || pathname === "/index.html") return send(res, 200, indexHtml(), Object.assign({ "Content-Type": MIME[".html"] }, SEC));
+  if (pathname === "/claude-shim.js") {
+    return send(res, 200, fs.readFileSync(path.join(__dirname, "claude-shim.js")), Object.assign({ "Content-Type": MIME[".js"] }, SEC));
+  }
+  const rel = path.normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, "");
+  const file = path.join(PUB, rel);
+  if (!file.startsWith(PUB + path.sep)) return send(res, 403, "Forbidden");
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) return send(res, 404, "Not found");
+    const ext = path.extname(file).toLowerCase();
+    const longCache = rel.startsWith("f" + path.sep) || rel.startsWith("pdfjs" + path.sep);
+    res.writeHead(200, Object.assign({ "Content-Type": MIME[ext] || "application/octet-stream", "Content-Length": st.size, "Cache-Control": longCache ? "public, max-age=604800" : "no-cache" }, SEC));
+    if (req.method === "HEAD") return res.end();
+    fs.createReadStream(file).pipe(res);
+  });
+}
+
+/* ---------- Router ---------- */
+const server = http.createServer(async (req, res) => {
+  try {
+    const u = new URL(req.url, "http://x");
+    const p = u.pathname;
+
+    if (p === "/healthz") return send(res, 200, { ok: true });
+
+    // Tài liệu đồng bộ
+    if (p === "/api/doc") {
+      const dp = String(u.searchParams.get("p") || "");
+      if (!PATH_RE.test(dp)) return send(res, 400, { error: "bad_path" });
+      const f = docFile(dp);
+      if (req.method === "GET") {
+        if (!fs.existsSync(f)) return send(res, 200, { exists: false });
+        const rec = JSON.parse(fs.readFileSync(f, "utf8"));
+        if (u.searchParams.get("v") && String(rec.v) === u.searchParams.get("v")) return send(res, 200, { exists: true, same: true, v: rec.v });
+        return send(res, 200, { exists: true, v: rec.v, data: rec.data });
+      }
+      if (req.method === "PUT") {
+        if (!canWrite(roleOf(req), dp)) return send(res, 403, { error: "permission_denied" });
+        const body = JSON.parse((await readBody(req, 8 * 1024 * 1024)).toString("utf8") || "null");
+        if (!body || typeof body !== "object" || Array.isArray(body)) return send(res, 400, { error: "invalid_argument" });
+        let v = 0;
+        try { v = JSON.parse(fs.readFileSync(f, "utf8")).v || 0; } catch (e) {}
+        writeAtomic(f, JSON.stringify({ v: v + 1, at: Date.now(), data: body }));
+        return send(res, 200, { ok: true, v: v + 1 });
+      }
+      return send(res, 405, { error: "method" });
+    }
+
+    // Phòng: phiên đăng nhập 1 thiết bị
+    if (p === "/api/room") {
+      const conn = String(u.searchParams.get("c") || "").slice(0, 64);
+      if (!/^[\w-]{8,64}$/.test(conn)) return send(res, 400, { error: "bad_conn" });
+      if (req.method === "POST") {
+        const body = JSON.parse((await readBody(req, 4096)).toString("utf8") || "{}");
+        if (body && body.presence && body.presence.a) ROOM.set(conn, { presence: body.presence, t: Date.now() });
+        else if (body && body.presence) ROOM.delete(conn);
+        else { const r = ROOM.get(conn); if (r) r.t = Date.now(); }
+        return send(res, 200, { peers: roomPeers(conn) });
+      }
+      if (req.method === "GET") return send(res, 200, { peers: roomPeers(conn) });
+      return send(res, 405, { error: "method" });
+    }
+
+    // Tệp tải lên (đã mã hoá phía trình duyệt)
+    if (p === "/api/assets" && req.method === "POST") {
+      if (!roleOf(req)) return send(res, 403, { error: "permission_denied" });
+      const buf = await readBody(req, 60 * 1024 * 1024);
+      const id = crypto.randomUUID();
+      writeAtomic(path.join(BLOBS, id), buf);
+      return send(res, 200, { id });
+    }
+    let m = p.match(/^\/api\/assets\/([\w-]{36})$/);
+    if (m && req.method === "DELETE") {
+      if (!roleOf(req)) return send(res, 403, { error: "permission_denied" });
+      try { fs.unlinkSync(path.join(BLOBS, m[1])); } catch (e) {}
+      return send(res, 200, { ok: true });
+    }
+    m = p.match(/^\/_blob\/([\w-]{36})$/);
+    if (m && (req.method === "GET" || req.method === "HEAD")) {
+      const f = path.join(BLOBS, m[1]);
+      if (!fs.existsSync(f)) return send(res, 404, "Not found");
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "private, max-age=86400" });
+      return fs.createReadStream(f).pipe(res);
+    }
+
+    if (req.method === "GET" || req.method === "HEAD") return serveStatic(req, res, p);
+    return send(res, 405, "Method not allowed");
+  } catch (e) {
+    const code = e && e.code === 413 ? 413 : (e instanceof SyntaxError ? 400 : 500);
+    if (code === 500) console.error(e);
+    if (!res.headersSent) send(res, code, { error: code === 413 ? "too_large" : code === 400 ? "invalid_argument" : "server_error" });
+  }
+});
+
+server.listen(PORT, () => console.log("TMN Quy trình chạy tại cổng " + PORT + " · dữ liệu: " + DATA));
