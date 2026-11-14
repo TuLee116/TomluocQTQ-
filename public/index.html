@@ -1242,8 +1242,9 @@ function encJSON(obj){var iv=crypto.getRandomValues(new Uint8Array(12));
     .then(function(ct){return {iv:TOB64(iv),ct:TOB64(new Uint8Array(ct)),at:Date.now()};});}
 function decJSON(doc){return crypto.subtle.importKey("raw",CKEY,"AES-GCM",false,["decrypt"]).then(function(k){return crypto.subtle.decrypt({name:"AES-GCM",iv:B64(doc.iv)},k,B64(doc.ct));})
     .then(function(b){return JSON.parse(new TextDecoder().decode(b));});}
-/* Bỏ các chỉnh sửa cũ lưu theo vị trí của bố cục trước (đã gộp vào nội dung gốc) */
-var STALE={"i:vanhoa-1":"*","i:vanhoa-4":"*","i:hkd-2":"Từ {{01/06/2023}}","i:hkd-3":"Áp dụng từ {{15/06/2026}} cho Thầu phụ, HKD, Tổ đội · người","i:hkd-13":"Nội dung ứng: chi phí {{MMTB}}","i:ncc-0":"BCH đề xuất kế hoạch mua hàng trước","i:ncc-1":"Thủ kho, NCC gửi phiếu nhận hàng"};
+/* (Bản trên Claude từng tự xoá chỉnh sửa ở vài vị trí cố định để dọn dữ liệu cũ.
+   Máy chủ riêng bắt đầu với dữ liệu trống nên bỏ hẳn – nếu giữ, chỉnh sửa ở B1.3, B1.4, B1.14… bị xoá ngay sau khi lưu.) */
+var STALE={};
 var TXFIX=[["QSTT", "QS-TT"], ["Phòng HCNS-TH", "Khối HCNS-TH"], ["P.HCNS-TH", "Khối HCNS-TH"], ["P. HCNS-TH", "Khối HCNS-TH"], ["GĐ Nhân sự Tổng hợp", "Phó TGĐ PT HCNS-TH"], ["Giám đốc Nhân sự – Tổng hợp", "Phó TGĐ PT HCNS-TH"], ["Giám đốc HCNS-TH", "Phó TGĐ PT HCNS-TH"], ["GĐ HCNS-TH", "Phó TGĐ PT HCNS-TH"], ["GĐ NS-TH", "Phó TGĐ PT HCNS-TH"], ["Giám đốc NS - TH", "Phó TGĐ PT HCNS-TH"], ["Giám đốc NS-TH", "Phó TGĐ PT HCNS-TH"], ["P.ĐT-KS-TT", "Khối KT-KH"], ["TP ĐT-KS-TT", "Khối KT-KH"], ["PP ĐT-TT", "Khối KT-KH"], ["Trưởng phòng ĐT-TT", "Khối KT-KH"], ["Phòng ĐT-TT", "Khối KT-KH"], ["P.ĐT-TT", "Khối KT-KH"], ["ĐT-TT", "Khối KT-KH"]];
 function fixTx(v){if(typeof v==="string"){TXFIX.forEach(function(r){v=v.split(r[0]).join(r[1]);});return v;}if(Array.isArray(v))return v.map(fixTx);if(v&&typeof v==="object"){var o={};Object.keys(v).forEach(function(k){o[k]=fixTx(v[k]);});return o;}return v;}
 function dropStale(o){o=fixTx(o);Object.keys(STALE).forEach(function(k){var v=o[k];if(Array.isArray(v)&&(STALE[k]==="*"||String(v[0]||"").indexOf(STALE[k])===0))delete o[k];});return o;}
