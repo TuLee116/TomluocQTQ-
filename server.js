@@ -133,13 +133,19 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, v] of SESS) if (now - v.seen > SESS_TTL) SESS.delete(k);
   for (const [k, t] of KICKED) if (now - t > KICK_TTL) KICKED.delete(k);
+  for (const [k, t] of ROOM_KICK) if (now - t > 120000) ROOM_KICK.delete(k);
 }, 30000);
 
 /* ---------- Phòng (phiên đăng nhập) ---------- */
-const ROOM = new Map(); // conn -> {presence, t}
+const ROOM = new Map(); // conn -> {presence, t, ip, ua}
 const ROOM_TTL = 30000;
+const ROOM_KICK = new Map(); // conn -> thời điểm: trả về 1 "phiên mới hơn" giả để trang (kể cả mã cũ) tự thoát
 function roomPeers(me) {
   const now = Date.now(), out = [];
+  const kk = ROOM_KICK.get(me), mine = ROOM.get(me);
+  if (kk && now - kk < 120000 && mine && mine.presence && mine.presence.a) {
+    out.push({ presence: { a: mine.presence.a, s: "zzkick", t: 9e15 }, kind: "viewer", sameTab: false });
+  }
   for (const [k, v] of ROOM) {
     if (now - v.t > ROOM_TTL) { ROOM.delete(k); continue; }
     if (k !== me) out.push({ presence: v.presence, kind: "viewer", sameTab: false });
@@ -272,7 +278,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === "/api/admin/sessions" && req.method === "GET") {
         const now = Date.now(), items = [];
-        for (const v of SESS.values()) if (now - v.seen <= SESS_TTL) items.push(v);
+        const seenSid = new Set();
+        for (const v of SESS.values()) if (now - v.seen <= SESS_TTL) { items.push(v); seenSid.add(v.sid); }
+        // Phiên từ trang chạy mã cũ (mở trước khi cập nhật): chỉ biết mã tài khoản dạng băm qua /api/room
+        for (const [conn, v] of ROOM) {
+          const pr = v.presence || {};
+          if (now - v.t > ROOM_TTL || !pr.a || ROOM_KICK.has(conn) || seenSid.has(String(pr.s))) continue;
+          seenSid.add(String(pr.s));
+          items.push({ sid: "room:" + conn, a: clip(pr.a, 64), u: "", r: "", v: "", ip: v.ip || "", ua: v.ua || "", lt: +pr.t || 0, seen: v.t, act: 0, legacy: true });
+        }
         items.sort((a, b) => (b.lt || 0) - (a.lt || 0));
         return send(res, 200, { now: now, items: items });
       }
@@ -295,7 +309,17 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, n: n });
         }
         const sid = String(b.sid || "");
+        if (sid.startsWith("room:")) {
+          const conn = sid.slice(5), r = ROOM.get(conn);
+          if (!r) return send(res, 200, { ok: true, found: false });
+          ROOM_KICK.set(conn, Date.now());
+          if (r.presence && r.presence.s) { KICKED.set(String(r.presence.s), Date.now()); broadcastRaw({ k: "kick", s: String(r.presence.s) }); }
+          addLog({ t: Date.now(), ev: "kick", u: "", a: clip(r.presence && r.presence.a, 64), r: "", v: "", ip: r.ip || "", ua: r.ua || "", by: "vinhtu" });
+          return send(res, 200, { ok: true, found: true });
+        }
         if (!SID_RE.test(sid)) return send(res, 400, { error: "bad_sid" });
+        // Phiên mã mới cũng gửi /api/room → chặn luôn kênh đó
+        for (const [conn, r] of ROOM) if (r.presence && String(r.presence.s) === sid) ROOM_KICK.set(conn, Date.now());
         return send(res, 200, { ok: true, found: kick(sid) });
       }
       return send(res, 404, { error: "not_found" });
@@ -307,9 +331,13 @@ const server = http.createServer(async (req, res) => {
       if (!/^[\w-]{8,64}$/.test(conn)) return send(res, 400, { error: "bad_conn" });
       if (req.method === "POST") {
         const body = JSON.parse((await readBody(req, 4096)).toString("utf8") || "{}");
-        if (body && body.presence && body.presence.a) ROOM.set(conn, { presence: body.presence, t: Date.now() });
-        else if (body && body.presence) ROOM.delete(conn);
-        else { const r = ROOM.get(conn); if (r) r.t = Date.now(); }
+        if (body && body.presence && body.presence.a) {
+          const isNew = !ROOM.has(conn);
+          ROOM.set(conn, { presence: body.presence, t: Date.now(), ip: clientIp(req), ua: clip(req.headers["user-agent"], 300) });
+          if (isNew) admNotify();
+        }
+        else if (body && body.presence) { ROOM_KICK.delete(conn); if (ROOM.delete(conn)) admNotify(); }
+        else { const r = ROOM.get(conn); if (r) { r.t = Date.now(); r.ip = clientIp(req); } }
         return send(res, 200, { peers: roomPeers(conn) });
       }
       if (req.method === "GET") return send(res, 200, { peers: roomPeers(conn) });

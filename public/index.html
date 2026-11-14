@@ -544,7 +544,7 @@ body.superuser .pvpages{-webkit-user-select:auto;user-select:auto}
 .adm-b.ok{background:color-mix(in srgb,var(--c2) 13%,transparent);border-color:transparent;color:var(--c2)}
 .adm-b.bad{background:var(--warn-bg);border-color:transparent;color:var(--warn)}
 .adm-b.kk{background:color-mix(in srgb,var(--c3) 13%,transparent);border-color:transparent;color:var(--c3)}
-.adm-v{color:var(--c2);font-weight:800}
+.adm-v{color:var(--c2);font-weight:800}.adm-t td small.adm-old{color:var(--c5)}
 .adm-kick{padding:3px 10px!important;font-size:12px!important;color:var(--warn)!important;border-color:var(--warn)!important;white-space:nowrap}
 .adm-more{text-align:center;margin-top:8px}
 .adm-t tr.new td{animation:admNew 3s ease-out}@keyframes admNew{from{background:color-mix(in srgb,var(--accent) 35%,transparent)}to{background:transparent}}
@@ -1676,6 +1676,18 @@ function admUA(ua){ua=String(ua||"");if(!ua)return "–";var b="Khác",o="";
 var ADM_ROLE={super:"Toàn quyền",admin:"Admin",manager:"Quản lý",user:"Thành viên"};
 var ADM_H={};function admHash(u){u=String(u||"");return ADM_H[u]||(ADM_H[u]=sha256hex("tmn-u|"+u));}
 function admName(u){u=String(u||"");if(!u)return "";var pf=PROF[admHash(u)];return pf&&pf[0]?pf[0]:"";}
+/* Đoán tên đăng nhập từ họ tên (VD Đỗ Nhất Khoa → khoadn), chỉ nhận khi khớp đúng dấu băm đã lưu */
+var ADM_G={};
+function admGuess(a){if(!a||!a.h||!a.n)return "";if(a.h in ADM_G)return ADM_G[a.h];
+  var w=String(a.n).trim().split(/\s+/).map(nkey).filter(Boolean),c=[];if(!w.length)return ADM_G[a.h]="";
+  var last=w[w.length-1],rest=w.slice(0,-1),ini=rest.map(function(x){return x.charAt(0);}).join("");
+  c.push(last+ini,last+"."+ini,last+(rest[0]||"").charAt(0),last+rest.join(""),w.join(""),last+"."+rest.join(""),ini+last,(rest[0]||"")+last,last);
+  for(var i=0;i<c.length;i++)if(c[i]&&admHash(c[i])===a.h)return ADM_G[a.h]=c[i];
+  return ADM_G[a.h]="";}
+/* Bảng tra: mã phiên (tmn-sess|tên) → tên đăng nhập, từ mọi tên đã biết */
+function admSessMap(){var m={},add=function(u){u=String(u||"");if(u&&!m.k[u]){m.k[u]=1;m.a[sha256hex("tmn-sess|"+u).slice(0,24)]=u;}};m.k={};m.a={};
+  ADM.logs.forEach(function(x){add(x.u);});ADM.sess.forEach(function(x){add(x.u);});(ACCD.list||[]).forEach(function(a){add(admGuess(a));});add(ME&&ME.id);return m.a;}
+function admResolve(){if(!ADM.sess.some(function(s){return s.legacy;}))return;var m=ADM.amap||(ADM.amap=admSessMap());ADM.sess.forEach(function(s){if(s.legacy&&!s.u&&m[s.a]){s.u=m[s.a];s.r=admHash(s.u)===ACC.super_user?"super":"user";}});}
 function admUser(u){var n=admName(u);return '<b>'+esc(String(u||"(trống)"))+'</b>'+(n?'<small>'+esc(n)+'</small>':'');}
 function admRole(r,v){if(!r)return "–";return esc(ADM_ROLE[r]||r)+(v&&v===r?' <span class="adm-v" title="Máy chủ đã xác thực mật khẩu">✔</span>':'');}
 function admMsg(t,c){ADM.hold=Date.now()+6000;admSt(t,c);}
@@ -1690,7 +1702,7 @@ function admLoad(full){
     var lg=r[0],it=lg.items||[];ADM.fresh={};
     if(after&&lg.inc){it.forEach(function(x){ADM.fresh[x.i]=1;});ADM.logs=it.concat(ADM.logs).slice(0,5500);}
     else ADM.logs=it;
-    ADM.seq=lg.seq||0;ADM.sess=r[1].items||[];ADM.now=r[1].now||Date.now();
+    ADM.seq=lg.seq||0;ADM.sess=r[1].items||[];ADM.now=r[1].now||Date.now();if(it.length||!after)ADM.amap=null;admResolve();
     if(Date.now()>(ADM.hold||0))admSt((TMN_LIVE?"● Trực tiếp · ":"")+"cập nhật "+admTs(Date.now(),1),"ok");admRender();
   }).catch(function(e){admSt(e&&e.message==="403"?"Máy chủ từ chối: mật khẩu vinhtu không khớp biến SUPER_PASS trên Railway.":"Không tải được dữ liệu – kiểm tra mạng rồi bấm ↻.","err");admRender();})
   .then(function(){ADM.busy=false;if(ADM.again)setTimeout(admLoad,50);});
@@ -1709,6 +1721,7 @@ function admAcc(op,h){
   admSt("Đang lưu…");
   accSave().then(function(){
     if(op==="res"){USERSET[h]=1;if(a.n)PROF[h]=[a.n,a.c||""];}else delete USERSET[h];
+    if(op==="del"){ADM.sess.forEach(function(s){if(s.legacy&&s.u&&admHash(s.u)===h)tmnPost("/api/admin/kick",{sid:s.sid}).catch(function(){});});}
     if(op==="del")tmnPost("/api/admin/kick",{h:h}).then(function(j){admMsg("Đã gỡ "+nm+(j&&j.n?" · buộc thoát "+j.n+" phiên":"")+" ✓","ok");setTimeout(admLoad,300);}).catch(function(){admMsg("Đã gỡ "+nm+" ✓ (chưa buộc thoát được phiên đang mở)","err");});
     else admMsg((op==="res"?"Đã khôi phục ":"Đã xoá hẳn ")+nm+" ✓","ok");
     try{accRender();}catch(e){}admRender();
@@ -1742,14 +1755,14 @@ function admRender(){
     h+='<p class="adm-note">Tài khoản thêm bằng nút “👤 Thêm tài khoản” (đọc từ content/accounts, đã giải mã trên máy này). Máy chủ chỉ lưu dấu băm email, nên tên đăng nhập hiển thị theo lần đăng nhập gần nhất. <b>Gỡ</b> = khoá đăng nhập + buộc thoát phiên đang mở (khôi phục được).</p>'+
        '<div class="adm-tw"><table class="adm-t"><thead><tr><th>#</th><th>Họ tên / tài khoản</th><th>Vai trò</th><th>Ngày thêm</th><th>Người thêm</th><th>Đăng nhập gần nhất</th><th>Trạng thái</th><th></th></tr></thead><tbody>'+
        row(1,ME.id,"Ban Kiểm soát · tài khoản hệ thống","Toàn quyền","Hệ thống","",ACC.super_user,0)+
-       act.slice().reverse().map(function(a,i){var l=last[a.h];return row(i+2,a.n||"(không tên)",(l?l.u+"@tanminhnhan.com.vn":"")+(a.c?(l?" · ":"")+"Cấp "+a.c:""),"Thành viên",admTs(a.at),a.by+(a.req?" (đề xuất: "+a.req+")":""),a.h,0);}).join("")+
+       act.slice().reverse().map(function(a,i){var l=last[a.h];var gu=(l&&l.u)||admGuess(a);return row(i+2,a.n||"(không tên)",(gu?gu+"@tanminhnhan.com.vn":"")+(a.c?(gu?" · ":"")+"Cấp "+a.c:""),"Thành viên",admTs(a.at),a.by+(a.req?" (đề xuất: "+a.req+")":""),a.h,0);}).join("")+
        gone.slice().reverse().map(function(a,i){return row("–",a.n||"(không tên)",a.c?"Cấp "+a.c:"","Thành viên",admTs(a.at),a.by,a.h,a.del);}).join("")+'</tbody></table></div>'+
        (ACCREF?'':'<p class="adm-note bad">Chưa đọc được danh sách từ máy chủ – tải lại trang rồi thử lại.</p>');
   }else{
     h+='<p class="adm-note">Phiên báo về máy chủ mỗi 30 giây; phiên không báo quá 3 phút (đã đóng tab/tắt máy) sẽ tự rời danh sách. Bấm <b>Đăng xuất</b> để buộc phiên đó thoát ngay.</p>';
     if(!ADM.sess.length)h+='<p class="adm-empty">Không có phiên nào đang mở.</p>';
     else h+='<div class="adm-tw"><table class="adm-t"><thead><tr><th>Tài khoản</th><th>Vai trò</th><th>IP</th><th>Trình duyệt</th><th>Giờ đăng nhập</th><th>Hoạt động cuối</th><th></th></tr></thead><tbody>'+
-      ADM.sess.map(function(s){var me=s.sid===TMN_SID;return '<tr'+(me?' class="me"':'')+'><td>'+admUser(s.u)+'</td><td>'+admRole(s.r,s.v)+'</td><td class="mono">'+esc(String(s.ip||"–"))+'</td><td title="'+esc(String(s.ua||"")).replace(/"/g,"&quot;")+'">'+esc(admUA(s.ua))+'</td><td class="nw">'+admTs(s.lt)+'</td><td class="nw">'+admAgo(s.act)+'<small>'+admTs(s.act,1)+'</small></td><td>'+(me?'<span class="adm-b ok">Phiên này</span>':'<button class="btn adm-kick" data-sid="'+esc(String(s.sid))+'" data-u="'+esc(String(s.u||"")).replace(/"/g,"&quot;")+'">Đăng xuất</button>')+'</td></tr>';}).join("")+'</tbody></table></div>';
+      ADM.sess.map(function(s){var me=s.sid===TMN_SID;return '<tr'+(me?' class="me"':'')+'><td>'+(s.u?admUser(s.u):'<b>Chưa xác định</b><small>mã '+esc(String(s.a||"").slice(0,8))+'…</small>')+(s.legacy?'<small class="adm-old" title="Trang mở từ trước khi cập nhật – máy chủ chỉ biết mã tài khoản, chưa có hoạt động cuối">⚠ trang chưa tải lại (mã cũ)</small>':'')+'</td><td>'+admRole(s.r,s.v)+'</td><td class="mono">'+esc(String(s.ip||"–"))+'</td><td title="'+esc(String(s.ua||"")).replace(/"/g,"&quot;")+'">'+esc(admUA(s.ua))+'</td><td class="nw">'+admTs(s.lt)+'</td><td class="nw">'+(s.act?admAgo(s.act)+'<small>'+admTs(s.act,1)+'</small>':'<em>còn kết nối</em><small>'+admAgo(s.seen)+'</small>')+'</td><td>'+(me?'<span class="adm-b ok">Phiên này</span>':'<button class="btn adm-kick" data-sid="'+esc(String(s.sid))+'" data-u="'+esc(String(s.u||"")).replace(/"/g,"&quot;")+'">Đăng xuất</button>')+'</td></tr>';}).join("")+'</tbody></table></div>';
   }
   b.innerHTML=h;
   var f=$("admF");if(f)f.value=ADM.f;
