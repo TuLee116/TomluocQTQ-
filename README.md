@@ -19,6 +19,16 @@ Dữ liệu đồng bộ được lưu trong `DATA_DIR`:
 - `docs/content__overrides.json` – nội dung đã chỉnh sửa
 - `docs/content__accounts.json` – tài khoản thêm mới (đã mã hoá, chỉ lưu mã băm)
 - `docs/content__files.json` + `blobs/` – tệp admin tải lên
+- `logs/login.jsonl` – nhật ký đăng nhập (thành công/thất bại/bị buộc đăng xuất), giữ ~5.000 dòng mới nhất
+
+## Quản trị hệ thống (chỉ vinhtu)
+
+Nút **🛡 Quản trị hệ thống** trong menu, chỉ hiện với vinhtu:
+- **Nhật ký đăng nhập**: thời gian, tên đăng nhập, vai trò, IP (header `x-forwarded-for`), trình duyệt; lọc, tìm, tải CSV. Không bao giờ ghi mật khẩu.
+- **Tài khoản**: vinhtu + tài khoản thêm bằng nút (đọc `content/accounts`), lần đăng nhập gần nhất, trạng thái đang mở.
+- **Phiên đang mở**: tài khoản, IP, trình duyệt, giờ đăng nhập, hoạt động cuối; nút **Đăng xuất** buộc phiên thoát ngay (qua `/api/watch`).
+
+API `/api/admin/logs`, `/api/admin/sessions`, `/api/admin/kick` chỉ chạy khi header `x-tmn-w` khớp `SUPER_PASS`.
 
 ## Biến môi trường
 

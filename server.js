@@ -3,6 +3,7 @@
  * - API lưu dữ liệu đồng bộ (thay cho kho db của Claude): /api/doc
  * - Phiên đăng nhập 1 thiết bị: /api/room
  * - Tệp tải lên: /api/assets, /_blob/:id
+ * - Nhật ký đăng nhập + phiên đang mở: /api/auth/log, /api/sess, /api/admin/* (chỉ vinhtu)
  */
 "use strict";
 const http = require("http");
@@ -16,7 +17,9 @@ const DATA = path.resolve(process.env.DATA_DIR || path.join(__dirname, "data"));
 const DOCS = path.join(DATA, "docs");
 const BLOBS = path.join(DATA, "blobs");
 fs.mkdirSync(DOCS, { recursive: true });
+const LOGDIR = path.join(DATA, "logs");
 fs.mkdirSync(BLOBS, { recursive: true });
+fs.mkdirSync(LOGDIR, { recursive: true });
 
 const sha = (s) => crypto.createHash("sha256").update(s, "utf8").digest("hex");
 const TOK_SUPER = process.env.SUPER_PASS ? sha("tmn-w|" + process.env.SUPER_PASS) : null;
@@ -74,7 +77,55 @@ function broadcast(p, v) {
   const msg = "data: " + JSON.stringify({ p: p, v: v }) + "\n\n";
   for (const res of WATCH) { try { res.write(msg); } catch (e) { WATCH.delete(res); } }
 }
+function broadcastRaw(o) {
+  const msg = "data: " + JSON.stringify(o) + "\n\n";
+  for (const res of WATCH) { try { res.write(msg); } catch (e) { WATCH.delete(res); } }
+}
 setInterval(() => { for (const res of WATCH) { try { res.write(": ping\n\n"); } catch (e) { WATCH.delete(res); } } }, 20000);
+
+/* ---------- Nhật ký đăng nhập (lưu DATA_DIR/logs/login.jsonl, giữ ~5.000 dòng mới nhất) ---------- */
+const LOG_FILE = path.join(LOGDIR, "login.jsonl");
+const LOG_KEEP = 5000, LOG_SLACK = 500;
+let LOGS = [];
+try {
+  LOGS = fs.readFileSync(LOG_FILE, "utf8").split("\n").filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean).slice(-LOG_KEEP);
+} catch (e) {}
+function addLog(rec) {
+  LOGS.push(rec);
+  try {
+    if (LOGS.length > LOG_KEEP + LOG_SLACK) {
+      LOGS = LOGS.slice(-LOG_KEEP);
+      writeAtomic(LOG_FILE, LOGS.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    } else fs.appendFileSync(LOG_FILE, JSON.stringify(rec) + "\n");
+  } catch (e) { console.error("[log]", e.message); }
+}
+function clientIp(req) {
+  const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return (xf || req.headers["x-real-ip"] || (req.socket && req.socket.remoteAddress) || "").toString().replace(/^::ffff:/, "").slice(0, 64);
+}
+const clip = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, n);
+const ROLES = new Set(["super", "admin", "manager", "user"]);
+const cleanRole = (r) => (ROLES.has(r) ? r : "user");
+/* Chặn ghi log dồn dập từ một IP (tối đa 40 lần/phút) */
+const RATE = new Map();
+function rateOk(ip, max) {
+  const now = Date.now(), m = Math.floor(now / 60000), r = RATE.get(ip);
+  if (!r || r.m !== m) { RATE.set(ip, { m: m, n: 1 }); return true; }
+  return ++r.n <= max;
+}
+setInterval(() => { const m = Math.floor(Date.now() / 60000); for (const [k, v] of RATE) if (v.m !== m) RATE.delete(k); }, 60000);
+
+/* ---------- Phiên đang mở (theo sid trong phiên trình duyệt) ---------- */
+const SESS = new Map();   // sid -> {sid,u,r,v,ip,ua,lt,seen,act}
+const KICKED = new Map(); // sid -> thời điểm bị buộc thoát
+const SESS_TTL = 3 * 60000, SESS_MAX = 3000, KICK_TTL = 24 * 3600000;
+const SID_RE = /^[a-z0-9]{6,64}$/i;
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of SESS) if (now - v.seen > SESS_TTL) SESS.delete(k);
+  for (const [k, t] of KICKED) if (now - t > KICK_TTL) KICKED.delete(k);
+}, 30000);
 
 /* ---------- Phòng (phiên đăng nhập) ---------- */
 const ROOM = new Map(); // conn -> {presence, t}
@@ -162,6 +213,68 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, v: v + 1 });
       }
       return send(res, 405, { error: "method" });
+    }
+
+    // Nhật ký đăng nhập: trình duyệt báo kết quả mỗi lần bấm Đăng nhập (không bao giờ gửi mật khẩu)
+    if (p === "/api/auth/log" && req.method === "POST") {
+      const ip = clientIp(req);
+      if (!rateOk(ip, 40)) return send(res, 429, { error: "rate" });
+      const b = JSON.parse((await readBody(req, 4096)).toString("utf8") || "{}") || {};
+      const ok = b.ok === true;
+      const vr = roleOf(req); // vai trò máy chủ tự xác thực được (super/admin)
+      addLog({ t: Date.now(), ev: ok ? "ok" : "fail", u: clip(b.u, 80), r: ok ? cleanRole(b.r) : "", v: vr || "", ip: ip, ua: clip(req.headers["user-agent"], 300) });
+      return send(res, 200, { ok: true });
+    }
+
+    // Phiên đang mở: hello (vào trang) · ping (30 giây/lần) · bye (đăng xuất)
+    if (p === "/api/sess" && req.method === "POST") {
+      const b = JSON.parse((await readBody(req, 4096)).toString("utf8") || "{}") || {};
+      const sid = String(b.sid || "");
+      if (!SID_RE.test(sid)) return send(res, 400, { error: "bad_sid" });
+      if (KICKED.has(sid)) { SESS.delete(sid); return send(res, 200, { kick: true }); }
+      const now = Date.now(), op = String(b.op || "ping");
+      if (op === "bye") { SESS.delete(sid); return send(res, 200, { ok: true }); }
+      let s = SESS.get(sid);
+      if (op === "hello" || s) {
+        if (!s) {
+          if (SESS.size >= SESS_MAX) return send(res, 503, { error: "full" });
+          s = { sid: sid };
+          SESS.set(sid, s);
+        }
+        if (op === "hello") { s.u = clip(b.u, 80); s.r = cleanRole(b.r); s.v = roleOf(req) || ""; s.lt = +b.lt > 0 && +b.lt <= now ? +b.lt : (s.lt || now); }
+        s.ip = clientIp(req); s.ua = clip(req.headers["user-agent"], 300); s.seen = now;
+        const act = +b.act;
+        s.act = act > 0 && act <= now ? Math.max(act, s.act || 0) : (s.act || now);
+        return send(res, 200, { ok: true });
+      }
+      return send(res, 200, { unknown: true }); // máy chủ vừa khởi động lại → trình duyệt gửi lại hello
+    }
+
+    // Trang quản trị: chỉ vinhtu (header x-tmn-w khớp SUPER_PASS)
+    if (p.startsWith("/api/admin/")) {
+      if (roleOf(req) !== "super") return send(res, 403, { error: "permission_denied" });
+      if (p === "/api/admin/logs" && req.method === "GET") {
+        const lim = Math.min(Math.max(parseInt(u.searchParams.get("limit") || "5000", 10) || 5000, 1), LOG_KEEP + LOG_SLACK);
+        return send(res, 200, { total: LOGS.length, items: LOGS.slice(-lim).reverse() });
+      }
+      if (p === "/api/admin/sessions" && req.method === "GET") {
+        const now = Date.now(), items = [];
+        for (const v of SESS.values()) if (now - v.seen <= SESS_TTL) items.push(v);
+        items.sort((a, b) => (b.lt || 0) - (a.lt || 0));
+        return send(res, 200, { now: now, items: items });
+      }
+      if (p === "/api/admin/kick" && req.method === "POST") {
+        const b = JSON.parse((await readBody(req, 1024)).toString("utf8") || "{}") || {};
+        const sid = String(b.sid || "");
+        if (!SID_RE.test(sid)) return send(res, 400, { error: "bad_sid" });
+        const s = SESS.get(sid);
+        KICKED.set(sid, Date.now());
+        SESS.delete(sid);
+        broadcastRaw({ k: "kick", s: sid });
+        addLog({ t: Date.now(), ev: "kick", u: s ? s.u : "", r: s ? s.r : "", v: "", ip: s ? s.ip : "", ua: s ? s.ua : "", by: "vinhtu" });
+        return send(res, 200, { ok: true, found: !!s });
+      }
+      return send(res, 404, { error: "not_found" });
     }
 
     // Phòng: phiên đăng nhập 1 thiết bị
