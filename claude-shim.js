@@ -28,23 +28,42 @@
     return fetch("/api/doc?p=" + encodeURIComponent(p) + (v ? "&v=" + v : ""), { cache: "no-store" }).then(chk);
   }
   function poll(p) {
-    var L = listeners[p]; if (!L || !L.cbs.length || L.writing || L.polling) return;
-    var gen = L.gen; L.polling = true;
+    var L = listeners[p]; if (!L || !L.cbs.length || L.writing) return;
+    if (L.polling) { L.again = true; return; }                       // đang hỏi dở → hỏi lại ngay khi xong
+    var gen = L.gen; L.polling = true; L.again = false;
+    var done = function () { L.polling = false; if (L.again) { L.again = false; setTimeout(function () { poll(p); }, 0); } };
     fetchDoc(p, L.v).then(function (j) {
-      L.polling = false;
+      done();
       if (j.same || gen !== L.gen || L.writing) return;               // đã có lần ghi xen vào → bỏ kết quả này
       if (L.loaded && L.exists && j.exists && +j.v < +L.v) return;     // bản cũ hơn bản đang có → bỏ
       var changed = !L.loaded || j.v !== L.v || j.exists !== L.exists;
       L.loaded = true; L.v = j.v; L.exists = !!j.exists; L.data = j.data;
       if (changed) emit(p);
-    }).catch(function (e) { L.polling = false; L.cbs.forEach(function (c) { if (c.e) try { c.e(e); } catch (x) {} }); });
+    }).catch(function (e) { done(); L.cbs.forEach(function (c) { if (c.e) try { c.e(e); } catch (x) {} }); });
   }
   function emit(p) {
     var L = listeners[p];
     var snap = { exists: L.exists, data: function () { return L.data ? JSON.parse(JSON.stringify(L.data)) : undefined; } };
     L.cbs.slice().forEach(function (c) { try { c.f(snap); } catch (x) { console.error(x); } });
   }
-  setInterval(function () { if (document.hidden) return; Object.keys(listeners).forEach(poll); }, POLL);
+  /* Máy chủ đẩy thay đổi tức thì; khi kết nối đẩy đang sống thì chỉ hỏi lại thưa (30 giây) để phòng hờ,
+   * khi đứt thì quay về hỏi mỗi 4 giây. EventSource tự kết nối lại. */
+  var LIVE = false, lastPoll = 0;
+  try {
+    var es = new EventSource("/api/watch");
+    es.onopen = function () { LIVE = true; Object.keys(listeners).forEach(poll); };   // vừa nối lại → lấy bản mới nhất
+    es.onerror = function () { LIVE = false; };
+    es.onmessage = function (ev) {
+      var m; try { m = JSON.parse(ev.data); } catch (x) { return; }
+      var L = m && listeners[m.p]; if (!L) return;
+      if (!L.loaded || +m.v > +(L.v || 0)) poll(m.p);
+    };
+  } catch (e) {}
+  setInterval(function () {
+    if (document.hidden) return;
+    var now = Date.now(); if (LIVE && now - lastPoll < 30000) return;
+    lastPoll = now; Object.keys(listeners).forEach(poll);
+  }, POLL);
   document.addEventListener("visibilitychange", function () { if (!document.hidden) Object.keys(listeners).forEach(poll); });
 
   var db = {

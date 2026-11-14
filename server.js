@@ -66,6 +66,16 @@ function writeAtomic(file, buf) {
   fs.renameSync(tmp, file);
 }
 
+/* ---------- Đẩy thay đổi tức thì (Server-Sent Events) ----------
+ * Trình duyệt mở /api/watch và giữ kết nối; mỗi lần có bản lưu mới, máy chủ báo {p, v} ngay
+ * để mọi người đang xem nhận nội dung mới không phải chờ chu kỳ hỏi lại. */
+const WATCH = new Set();
+function broadcast(p, v) {
+  const msg = "data: " + JSON.stringify({ p: p, v: v }) + "\n\n";
+  for (const res of WATCH) { try { res.write(msg); } catch (e) { WATCH.delete(res); } }
+}
+setInterval(() => { for (const res of WATCH) { try { res.write(": ping\n\n"); } catch (e) { WATCH.delete(res); } } }, 20000);
+
 /* ---------- Phòng (phiên đăng nhập) ---------- */
 const ROOM = new Map(); // conn -> {presence, t}
 const ROOM_TTL = 30000;
@@ -122,6 +132,14 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/healthz") return send(res, 200, { ok: true });
 
+    if (p === "/api/watch" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
+      res.write("retry: 3000\n\n");
+      WATCH.add(res);
+      req.on("close", () => WATCH.delete(res));
+      return;
+    }
+
     // Tài liệu đồng bộ
     if (p === "/api/doc") {
       const dp = String(u.searchParams.get("p") || "");
@@ -140,6 +158,7 @@ const server = http.createServer(async (req, res) => {
         let v = 0;
         try { v = JSON.parse(fs.readFileSync(f, "utf8")).v || 0; } catch (e) {}
         writeAtomic(f, JSON.stringify({ v: v + 1, at: Date.now(), data: body }));
+        broadcast(dp, v + 1);
         return send(res, 200, { ok: true, v: v + 1 });
       }
       return send(res, 405, { error: "method" });
