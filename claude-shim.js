@@ -18,18 +18,26 @@
   }
 
   /* ---------- db ---------- */
-  var listeners = {}; // path -> {v, data, exists, cbs:[]}
+  /* listeners[p] = {v, data, exists, cbs:[], gen, writing, q}
+   * - gen: tăng mỗi lần ghi; kết quả poll gửi đi trước lần ghi sẽ bị bỏ (tránh bản cũ đè bản vừa lưu)
+   * - writing: số lần ghi đang chạy; trong lúc đó không poll
+   * - q: hàng đợi ghi tuần tự, để bản lưu sau luôn tới máy chủ sau */
+  var listeners = {};
+  function L_(p) { return listeners[p] || (listeners[p] = { cbs: [], gen: 0, writing: 0, q: Promise.resolve() }); }
   function fetchDoc(p, v) {
     return fetch("/api/doc?p=" + encodeURIComponent(p) + (v ? "&v=" + v : ""), { cache: "no-store" }).then(chk);
   }
   function poll(p) {
-    var L = listeners[p]; if (!L || !L.cbs.length) return;
+    var L = listeners[p]; if (!L || !L.cbs.length || L.writing || L.polling) return;
+    var gen = L.gen; L.polling = true;
     fetchDoc(p, L.v).then(function (j) {
-      if (j.same) return;
+      L.polling = false;
+      if (j.same || gen !== L.gen || L.writing) return;               // đã có lần ghi xen vào → bỏ kết quả này
+      if (L.loaded && L.exists && j.exists && +j.v < +L.v) return;     // bản cũ hơn bản đang có → bỏ
       var changed = !L.loaded || j.v !== L.v || j.exists !== L.exists;
       L.loaded = true; L.v = j.v; L.exists = !!j.exists; L.data = j.data;
       if (changed) emit(p);
-    }).catch(function (e) { L.cbs.forEach(function (c) { if (c.e) try { c.e(e); } catch (x) {} }); });
+    }).catch(function (e) { L.polling = false; L.cbs.forEach(function (c) { if (c.e) try { c.e(e); } catch (x) {} }); });
   }
   function emit(p) {
     var L = listeners[p];
@@ -43,7 +51,7 @@
     doc: function (p) {
       return {
         onSnapshot: function (f, e) {
-          var L = listeners[p] || (listeners[p] = { cbs: [] });
+          var L = L_(p);
           var c = { f: f, e: e }; L.cbs.push(c);
           if (L.loaded) setTimeout(function () { try { f({ exists: L.exists, data: function () { return L.data ? JSON.parse(JSON.stringify(L.data)) : undefined; } }); } catch (x) {} }, 0);
           else poll(p);
@@ -51,12 +59,20 @@
         },
         get: function () { return fetchDoc(p).then(function (j) { return { exists: !!j.exists, data: function () { return j.data; } }; }); },
         set: function (data) {
-          return fetch("/api/doc?p=" + encodeURIComponent(p), { method: "PUT", headers: hdr({ "Content-Type": "application/json" }), body: JSON.stringify(data) })
-            .then(chk).then(function (j) {
-              var L = listeners[p];
-              if (L) { L.loaded = true; L.v = j.v; L.exists = true; L.data = data; emit(p); }
-              return j;
-            });
+          var L = L_(p), body = JSON.stringify(data);
+          L.gen++; L.writing++;
+          var run = function () {
+            return fetch("/api/doc?p=" + encodeURIComponent(p), { method: "PUT", headers: hdr({ "Content-Type": "application/json" }), body: body })
+              .then(chk).then(function (j) {
+                L.gen++;
+                if (!L.loaded || !L.v || +j.v >= +L.v) { L.loaded = true; L.v = j.v; L.exists = true; L.data = JSON.parse(body); }
+                return j;
+              });
+          };
+          var pr = L.q.then(run, run);
+          L.q = pr.catch(function () {});
+          return pr.then(function (j) { L.writing--; if (!L.writing && L.cbs.length) emit(p); return j; },
+                         function (e) { L.writing--; throw e; });
         },
       };
     },
