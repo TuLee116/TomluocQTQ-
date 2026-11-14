@@ -627,7 +627,7 @@ body.superuser .pvpages{-webkit-user-select:auto;user-select:auto}
     <label>Cấp bậc<input id="accLv" type="text" autocomplete="off" placeholder="VD: 2B"></label>
     <label>Mật khẩu<input type="text" value="Mật khẩu dùng chung của thành viên" disabled></label>
   </div>
-  <div class="accnote">Tài khoản mới được ghi mã hóa (chỉ lưu dấu băm email) và tự đưa lên trang công khai trong lần đồng bộ kế tiếp (tối đa ~30 phút).</div>
+  <div class="accnote">Tài khoản mới được ghi mã hóa (chỉ lưu dấu băm email) và đăng nhập được ngay.</div>
   <div class="edact"><span class="st" id="accSt"></span><button class="btn" id="accCancel">Đóng</button><button class="btn pri" id="accOk">Thêm</button></div>
   <div class="acccode" id="accCodeBox" hidden><p class="dxhint">Tài khoản Admin không ghi trực tiếp được – đã tạo <b>mã đề xuất</b> (đã mã hoá). Bấm ⬇ hoặc sao chép mã gửi vinhtu (Ban Kiểm soát) để duyệt.</p><textarea id="accCode" readonly rows="3"></textarea><div class="edact"><button class="btn pri" id="accCodeDl">⬇ Tải file đề xuất</button></div></div>
   <div class="accimp" id="accImpBox" hidden><b>Duyệt đề xuất tài khoản</b><textarea id="accImp" rows="2" placeholder="Dán mã TMN-ACC1:… từ Admin"></textarea><div class="edact"><span class="st" id="accImpSt"></span><button class="btn pri" id="accImpOk">Duyệt & thêm</button></div></div>
@@ -732,7 +732,7 @@ function encBytes(buf){var iv=crypto.getRandomValues(new Uint8Array(12));
     .then(function(ct){return JSON.stringify({v:1,iv:TOB64(iv),ct:TOB64(new Uint8Array(ct))});});}
 var MIME={pdf:"application/pdf",doc:"application/msword",docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",xls:"application/vnd.ms-excel",xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg"};
 function uploadFiles(fl){
-  if(!ASSETS||!UPREF||!CKEY){upStat("Kho file chưa sẵn sàng – mở trang bằng tài khoản Claude chủ sở hữu.","err");return;}
+  if(!ASSETS||!UPREF||!CKEY){upStat("Kho file chưa sẵn sàng – tải lại trang rồi thử lại.","err");return;}
   var have={};Object.keys(UP.items).forEach(function(a){var it=UP.items[a];have[(it.p||it.n)+"|"+it.s]=1;});
   var list=[].filter.call(fl,function(f){var n=f.name;return !/^(~\$|\.|desktop\.ini$|thumbs\.db$)/i.test(n)&&!have[(f.webkitRelativePath||n)+"|"+f.size];});
   var big=list.filter(function(f){return f.size>14*1024*1024;});list=list.filter(function(f){return f.size<=14*1024*1024;});
@@ -819,7 +819,7 @@ function accRender(){var b=$("accList");if(!b)return;var L=(ACCD.list||[]).filte
   b.innerHTML="<b>Đã thêm bằng nút ("+L.length+")</b>"+L.slice().reverse().map(function(a){var dt=new Date(a.at||0),p=function(n){return (n<10?"0":"")+n;};return '<div class="r"><span>'+esc(a.n||"")+(a.c?" · Cấp "+esc(a.c):"")+' <em>'+p(dt.getDate())+"/"+p(dt.getMonth()+1)+" "+p(dt.getHours())+":"+p(dt.getMinutes())+'</em></span><button data-h="'+a.h+'" title="Gỡ tài khoản này">✕</button></div>';}).join("");}
 function accSave(){if(!ACCREF)return Promise.reject();return encJSON(ACCD).then(function(doc){doc.hs=(ACCD.list||[]).filter(function(a){return a&&a.h&&!a.del;}).map(function(a){return a.h;});return ACCREF.set(doc);});}
 (function(){var open=function(){if(!ME||(ME.role!=="super"&&ME.role!=="admin"))return;var sup=ME.role==="super";$("accMail").value="";$("accName").value="";$("accLv").value="";$("accCodeBox").hidden=true;$("accImpBox").hidden=!sup;$("accList").hidden=!sup;$("accImp").value="";
-  accSt(sup?(ACCREF?"":"Cần đăng nhập Claude để lưu tài khoản."):"",sup&&!ACCREF?"err":"");accRender();$("accDlg").hidden=false;setTimeout(function(){$("accMail").focus();},30);};
+  accSt(sup?(ACCREF?"":"Chưa kết nối được máy chủ – tải lại trang rồi thử lại."):"",sup&&!ACCREF?"err":"");accRender();$("accDlg").hidden=false;setTimeout(function(){$("accMail").focus();},30);};
   var close=function(){$("accDlg").hidden=true;};
   document.addEventListener("click",function(e){var t=e.target;if(!t)return;if(t.id==="accAdd")open();else if(t.id==="accX"||t.id==="accCancel")close();
     else if(t.id==="accOk"){var mail=String($("accMail").value||"").trim(),lp=localPart(mail),nm=String($("accName").value||"").trim().replace(/\s+/g," "),lv=String($("accLv").value||"").trim().toUpperCase();
@@ -830,18 +830,18 @@ function accSave(){if(!ACCREF)return Promise.reject();return encJSON(ACCD).then(
         var direct=ACCREF?(function(){ACCD.list=ACCD.list||[];ACCD.list.push({h:h,n:nm,c:lv,at:Date.now(),by:ME.id});return accSave().catch(function(e){ACCD.list.pop();throw e;});})():Promise.reject();
         var viaDb=direct.catch(function(){return (ACCDB&&DKEY)?crypto.subtle.importKey("raw",DKEY,"AES-GCM",false,["encrypt"]).then(function(k){var iv=crypto.getRandomValues(new Uint8Array(12));return crypto.subtle.encrypt({name:"AES-GCM",iv:iv},k,new TextEncoder().encode(JSON.stringify(req))).then(function(ct){return ACCDB.doc("accreq/r"+Date.now().toString(36)+Math.random().toString(36).slice(2,8)).set({iv:TOB64(iv),ct:TOB64(new Uint8Array(ct)),at:Date.now()});});}):Promise.reject();});
         accSt("Đang gửi…");
-        viaDb.then(function(){USERSET[h]=1;PROF[h]=[nm,lv];accSt("Đã thêm "+nm+" ✓ – "+(window.claude&&claude.local?"đăng nhập được ngay.":"đăng nhập được trên trang công khai sau tối đa ~5 phút."));$("accMail").value="";$("accName").value="";$("accLv").value="";})
+        viaDb.then(function(){USERSET[h]=1;PROF[h]=[nm,lv];accSt("Đã thêm "+nm+" ✓ – "+"đăng nhập được ngay.");$("accMail").value="";$("accName").value="";$("accLv").value="";})
         .catch(function(){encJSON(req).then(function(doc){var code="TMN-ACC1:"+btoa(JSON.stringify(doc));$("accCode").value=code;$("accCodeBox").hidden=false;
           $("accCodeDl").onclick=function(){saveFile("de-xuat-tk-"+nm.replace(/\s+/g,"_")+".txt",code);};accSt("Đã tạo mã đề xuất cho "+nm+" – gửi vinhtu duyệt.");});});return;}
-      if(!ACCREF){accSt("Cần đăng nhập Claude để lưu tài khoản.","err");return;}
+      if(!ACCREF){accSt("Chưa kết nối được máy chủ – tải lại trang rồi thử lại.","err");return;}
       ACCD.list=ACCD.list||[];ACCD.list.push({h:h,n:nm,c:lv,at:Date.now(),by:ME.id});accSt("Đang lưu…");
-      accSave().then(function(){USERSET[h]=1;PROF[h]=[nm,lv];accSt("Đã thêm "+nm+" ✓ – sẽ lên bản công khai trong lần đồng bộ kế tiếp.");$("accMail").value="";$("accName").value="";$("accLv").value="";accRender();})
+      accSave().then(function(){USERSET[h]=1;PROF[h]=[nm,lv];accSt("Đã thêm "+nm+" ✓ – đăng nhập được ngay.");$("accMail").value="";$("accName").value="";$("accLv").value="";accRender();})
         .catch(function(){ACCD.list.pop();accSt("Lưu không thành công.","err");});}
     else if(t.id==="accImpOk"){if(!ME||ME.role!=="super")return;var ist=function(x,c){var e=$("accImpSt");e.textContent=x;e.className="st"+(c?" "+c:"");};
       var raw=String($("accImp").value||"").trim(),m=raw.match(/TMN-ACC1:([A-Za-z0-9+\/=]+)/);if(!m){ist("Mã không hợp lệ.","err");return;}
       var doc;try{doc=JSON.parse(atob(m[1]));}catch(x){ist("Mã không hợp lệ.","err");return;}
       decJSON(doc).then(function(o){if(!o||o.k!=="acc"||!o.h||o.h.length!==64||!o.n)throw 0;
-        if(USERSET[o.h]){ist(o.n+" đã có trong hệ thống.","err");return;}if(!ACCREF){ist("Cần đăng nhập Claude để lưu.","err");return;}
+        if(USERSET[o.h]){ist(o.n+" đã có trong hệ thống.","err");return;}if(!ACCREF){ist("Chưa kết nối được máy chủ – tải lại trang rồi thử lại.","err");return;}
         ACCD.list=ACCD.list||[];ACCD.list.push({h:o.h,n:o.n,c:o.c||"",at:Date.now(),by:ME.id,req:o.by||"admin"});ist("Đang lưu…");
         return accSave().then(function(){USERSET[o.h]=1;PROF[o.h]=[o.n,o.c||""];$("accImp").value="";ist("Đã duyệt "+o.n+(o.c?" · Cấp "+o.c:"")+" ✓");accRender();}).catch(function(){ACCD.list.pop();ist("Lưu không thành công.","err");});
       }).catch(function(){ist("Mã không đọc được (sai hoặc hỏng).","err");});}
@@ -931,7 +931,7 @@ function openAdd(path){if(!IS_ADMIN)return;$("fdlg").dataset.cur="dm|add";var t0
   var dr=$("dmDrop"),inp=$("dmIn"),drD=$("dmDropD"),inD=$("dmInD");dr.onclick=function(){inp.value="";inp.click();};drD.onclick=function(){inD.value="";inD.click();};
   inp.onchange=function(){dmPick(this.files);};inD.onchange=function(){dmPick(this.files);};
   $("dmMk").onclick=function(){var nm=$("dmNew").value.replace(/[\/\\]+/g," ").replace(/\s+/g," ").trim(),par=$("dmDir").value;if(!nm){$("dmNew").focus();return;}
-    if(!UPREF){dmSt("Chưa lưu được: cần mở trang bằng tài khoản Claude chủ sở hữu.","err");return;}
+    if(!UPREF){dmSt("Chưa lưu được – tải lại trang rồi thử lại.","err");return;}
     var np=par+"/"+nm;if(TVP[np]){dmSt("Thư mục này đã có.","err");return;}UP.dirs=UP.dirs||{};UP.dirs[np]={at:Date.now(),by:ME&&ME.id||""};
     saveUP().then(function(){refreshFiles();$("dmDir").innerHTML=folderOpts(np);$("dmNew").value="";dmSt("Đã tạo thư mục “"+nm+"” ✓ – đã chọn làm thư mục lưu","ok");}).catch(function(){dmSt("Lưu không thành công.","err");});};
   dr.ondragover=function(e){e.preventDefault();dr.classList.add("on");};dr.ondragleave=function(){dr.classList.remove("on");};
@@ -945,7 +945,7 @@ function dmPick(fl){[].forEach.call(fl,function(f){if(/^(~\$|\.|desktop\.ini$|th
   $("dmGo").disabled=!DMFILES.length;dmSt("");}
 function dmSt(t,c){var e=$("dmSt");if(!e)return;e.textContent=t||"";e.className="dmst"+(c?" "+c:"");}
 function dmUpload(path){
-  if(!ASSETS||!UPREF||!CKEY){dmSt("Chưa lưu được: cần mở trang bằng tài khoản Claude chủ sở hữu (có quyền ghi kho).","err");return;}
+  if(!ASSETS||!UPREF||!CKEY){dmSt("Chưa lưu được – tải lại trang rồi thử lại.","err");return;}
   if(!TVP[path]){dmSt("Chọn thư mục lưu.","err");return;}
   var have={};Object.keys(UP.items).forEach(function(a){var it=UP.items[a];if(it.f===2)have[it.p+"/"+it.n+"|"+it.s]=1;});
   function dst(f){var rd=relDir(f);return rd?path+"/"+rd:path;}
@@ -986,7 +986,7 @@ function openList(){if(!CANDOC())return;$("fdlg").dataset.cur="dm|list";$("fbox"
 function dmDelete(btn){
   if(!btn.classList.contains("sure")){document.querySelectorAll(".xb.sure").forEach(function(b){b.classList.remove("sure");b.textContent=b.dataset.t;});
     btn.dataset.t=btn.textContent;btn.classList.add("sure");btn.textContent="Bấm lần nữa để xác nhận";return;}
-  if(!UPREF){dmSt("Chưa lưu được: cần mở trang bằng tài khoản Claude chủ sở hữu.","err");return;}
+  if(!UPREF){dmSt("Chưa lưu được – tải lại trang rồi thử lại.","err");return;}
   var pk=btn.dataset.del,msg;UP.hidden=UP.hidden||{};
   if(pk.indexOf("up:")===0){var aid=pk.slice(3),it=UP.items[aid];delete UP.items[aid];msg="Đã xoá “"+(it&&it.n||"")+"” ✓";
     try{if(ASSETS&&ASSETS.delete)ASSETS.delete(aid).catch(function(){});}catch(e){}}
@@ -1263,7 +1263,7 @@ function startSync(){
   claude.use("db").then(function(db){
     loadDraft().then(remerge);
     if(!db){var lo=LS.get("dc_ovr_local",null);if(lo&&lo.ct)decJSON(lo).then(function(o){BASE=o||{};remerge();}).catch(function(){});
-      if(IS_ADMIN)edStatus("Chưa bật kho đồng bộ – chỉnh sửa tạm lưu trên máy này.","err");return;}
+      if(IS_ADMIN)edStatus("Không kết nối được máy chủ – chỉnh sửa tạm lưu trên máy này.","err");return;}
     DB=db;DBREF=db.doc("content/overrides");if(CANDOC())startFiles(db);startAcc(db);
     DBUNSUB=DBREF.onSnapshot(function(snap){
       if(!snap.exists){BASE={};remerge();return;}
@@ -1292,16 +1292,16 @@ function startSess(){
 function sessStop(){try{if(SESSUN)SESSUN();}catch(e){}SESSUN=null;SESSREF=null;}
 function sessKick(){sessStop();try{wipe("Tài khoản vừa được đăng nhập trên thiết bị/phiên khác. Mỗi tài khoản chỉ dùng tại 1 nơi – phiên này đã đóng.");}catch(e){}}
 function saveOverrides(){
-  if(!DBREF){encJSON(BASE).then(function(doc){LS.set("dc_ovr_local",doc);edStatus("Đã lưu trên máy này (chưa đồng bộ cho mọi người – cần bật kho đồng bộ).","err");});return;}
+  if(!DBREF){encJSON(BASE).then(function(doc){LS.set("dc_ovr_local",doc);edStatus("Đã lưu tạm trên máy này (chưa lên máy chủ – kiểm tra mạng rồi tải lại trang).","err");});return;}
   edStatus("Đang lưu…");
-  (BASE.__v=3,encJSON(BASE)).then(function(doc){return DBREF.set(doc);}).then(function(){edStatus("Đã lưu & đồng bộ ✓","ok");})
-   .catch(function(e){edStatus(e&&e.code==="invalid_argument"?"Không có quyền ghi: cần mở trang bằng tài khoản claude.ai chủ sở hữu artifact.":"Lưu không thành công, vui lòng thử lại.","err");});
+  (BASE.__v=3,encJSON(BASE)).then(function(doc){return DBREF.set(doc);}).then(function(){edStatus("Đã lưu ✓","ok");})
+   .catch(function(e){edStatus(e&&(e.code==="invalid_argument"||e.code==="permission_denied")?"Không có quyền ghi – đăng xuất rồi đăng nhập lại bằng vinhtu.":"Lưu không thành công, vui lòng thử lại.","err");});
 }
 function setEdit(on){
   EDIT=on;document.body.classList.toggle("editing",on);
   $("edReset").textContent=PROP()?"↺ Xoá bản nháp":"↺ Khôi phục bản gốc";$("edBtn").setAttribute("aria-pressed",on);$("edBtn").textContent=on?"✔ Xong":"✏️ Chỉnh sửa nội dung";$("edReset").hidden=!on;
   document.querySelectorAll("#otree [data-tx],.hero [data-tx]").forEach(function(el){if(on)el.setAttribute("contenteditable","plaintext-only");else el.removeAttribute("contenteditable");});
-  if(on)edStatus("Nhóm (A1, B1…): ↑↓ sắp xếp · 🗑 xoá cả nhóm · ＋ Thêm nhóm cuối mỗi khối. Mục lục: bấm vào chữ để sửa tên · ↑↓ di chuyển · ⇄ chuyển nhóm · 🗑 xoá · ＋ Thêm mục. Nội dung chi tiết: ✏️ ＋ 🗑 ↑↓ cho từng ý. Mọi thay đổi tự đồng bộ giữa Mục lục – Chi tiết – Menu.");
+  if(on)edStatus("Nhóm (A1, B1…): ↑↓ sắp xếp · 🗑 xoá cả nhóm · ＋ Thêm nhóm cuối mỗi khối. Mục lục: bấm vào chữ để sửa tên · ↑↓ di chuyển · ⇄ chuyển nhóm · 🗑 xoá · ＋ Thêm mục. Nội dung chi tiết: ✏️ ＋ 🗑 ↑↓ cho từng ý. Mọi thay đổi tự cập nhật giữa Mục lục – Chi tiết – Menu.");
   if(on)document.querySelectorAll(".branch.closed").forEach(function(b){b.classList.remove("closed");});
   if(!on)closeEd();
 }
@@ -1419,11 +1419,11 @@ function showProposal(pk){var ks=Object.keys(pk.ch||{});
   $("dxTitle").textContent="Từ: "+pk.by+" · "+new Date(pk.at).toLocaleString("vi-VN")+" · "+ks.length+" thay đổi";
   $("dxBody").innerHTML='<div class="dxsum">'+ks.map(function(k,i){var cur=curVal(k),stale=JSON.stringify(cur)!==JSON.stringify(pk.bf[k]);
       return '<label class="dxi"><input type="checkbox" data-k="'+esc(k)+'" checked><b>'+esc(keyLabel(k))+'</b>'+(stale?'<span class="dxw">Nội dung hiện tại đã thay đổi sau khi đề xuất – kiểm tra kỹ</span>':'')+diffHTML(k,cur,pk.ch[k])+'</label>';}).join("")+'</div>'+
-    '<div class="edact"><button class="btn" id="dxNo">Từ chối</button><button class="btn pri" id="dxYes">✔ Duyệt & đồng bộ</button></div>';
+    '<div class="edact"><button class="btn" id="dxNo">Từ chối</button><button class="btn pri" id="dxYes">✔ Duyệt & áp dụng</button></div>';
   $("dxNo").onclick=function(){$("dxDlg").hidden=true;};
   $("dxYes").onclick=function(){var n=0;snapOrig();document.querySelectorAll("#dxBody input[data-k]:checked").forEach(function(c){var k=c.dataset.k,v=pk.ch[k];
       if(JSON.stringify(v)===JSON.stringify(ORIG[k]))delete BASE[k];else BASE[k]=v;n++;});
-    remerge();saveOverrides();$("dxDlg").hidden=true;edStatus("Đã duyệt "+n+" thay đổi – đang đồng bộ…","ok");};
+    remerge();saveOverrides();$("dxDlg").hidden=true;edStatus("Đã duyệt "+n+" thay đổi ✓","ok");};
 }
 /* Thanh dính, chip đang xem, nút lên đầu */
 var LASTCUR;
