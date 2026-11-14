@@ -55,6 +55,7 @@
     es.onerror = function () { LIVE = false; };
     es.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (x) { return; }
+      if (m && m.k === "adm") { try { window.dispatchEvent(new Event("tmn-adm")); } catch (x) {} return; }
       if (m && m.k === "kick") { try { window.dispatchEvent(new CustomEvent("tmn-kick", { detail: m.s })); } catch (x) {} return; }
       var L = m && listeners[m.p]; if (!L) return;
       if (!L.loaded || +m.v > +(L.v || 0)) poll(m.p);

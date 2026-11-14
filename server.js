@@ -91,8 +91,16 @@ try {
   LOGS = fs.readFileSync(LOG_FILE, "utf8").split("\n").filter(Boolean)
     .map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean).slice(-LOG_KEEP);
 } catch (e) {}
+/* Số thứ tự tăng dần cho từng dòng → trang quản trị chỉ tải phần mới (after=i) */
+let LOG_SEQ = 0;
+for (const r of LOGS) { if (!(r.i > LOG_SEQ)) r.i = LOG_SEQ + 1; LOG_SEQ = r.i; }
+/* Báo trang quản trị có thay đổi (gộp trong 0,7 giây để không dồn dập) */
+let ADM_T = null;
+function admNotify() { if (ADM_T) return; ADM_T = setTimeout(() => { ADM_T = null; broadcastRaw({ k: "adm" }); }, 700); }
 function addLog(rec) {
+  rec.i = ++LOG_SEQ;
   LOGS.push(rec);
+  admNotify();
   try {
     if (LOGS.length > LOG_KEEP + LOG_SLACK) {
       LOGS = LOGS.slice(-LOG_KEEP);
@@ -233,13 +241,14 @@ const server = http.createServer(async (req, res) => {
       if (!SID_RE.test(sid)) return send(res, 400, { error: "bad_sid" });
       if (KICKED.has(sid)) { SESS.delete(sid); return send(res, 200, { kick: true }); }
       const now = Date.now(), op = String(b.op || "ping");
-      if (op === "bye") { SESS.delete(sid); return send(res, 200, { ok: true }); }
+      if (op === "bye") { if (SESS.delete(sid)) admNotify(); return send(res, 200, { ok: true }); }
       let s = SESS.get(sid);
       if (op === "hello" || s) {
         if (!s) {
           if (SESS.size >= SESS_MAX) return send(res, 503, { error: "full" });
           s = { sid: sid };
           SESS.set(sid, s);
+          admNotify();
         }
         if (op === "hello") { s.u = clip(b.u, 80); s.r = cleanRole(b.r); s.v = roleOf(req) || ""; s.lt = +b.lt > 0 && +b.lt <= now ? +b.lt : (s.lt || now); }
         s.ip = clientIp(req); s.ua = clip(req.headers["user-agent"], 300); s.seen = now;
@@ -255,7 +264,11 @@ const server = http.createServer(async (req, res) => {
       if (roleOf(req) !== "super") return send(res, 403, { error: "permission_denied" });
       if (p === "/api/admin/logs" && req.method === "GET") {
         const lim = Math.min(Math.max(parseInt(u.searchParams.get("limit") || "5000", 10) || 5000, 1), LOG_KEEP + LOG_SLACK);
-        return send(res, 200, { total: LOGS.length, items: LOGS.slice(-lim).reverse() });
+        const after = parseInt(u.searchParams.get("after") || "0", 10) || 0;
+        let items;
+        if (after > 0 && after <= LOG_SEQ) { let k = LOGS.length; while (k > 0 && LOGS[k - 1].i > after) k--; items = LOGS.slice(Math.max(k, LOGS.length - lim)); }
+        else items = LOGS.slice(-lim);
+        return send(res, 200, { seq: LOG_SEQ, total: LOGS.length, inc: after > 0 && after <= LOG_SEQ, items: items.reverse() });
       }
       if (p === "/api/admin/sessions" && req.method === "GET") {
         const now = Date.now(), items = [];
@@ -265,14 +278,25 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === "/api/admin/kick" && req.method === "POST") {
         const b = JSON.parse((await readBody(req, 1024)).toString("utf8") || "{}") || {};
+        const kick = (sid) => {
+          const s = SESS.get(sid);
+          KICKED.set(sid, Date.now());
+          SESS.delete(sid);
+          broadcastRaw({ k: "kick", s: sid });
+          addLog({ t: Date.now(), ev: "kick", u: s ? s.u : "", r: s ? s.r : "", v: "", ip: s ? s.ip : "", ua: s ? s.ua : "", by: "vinhtu" });
+          return !!s;
+        };
+        // Buộc thoát mọi phiên của 1 tài khoản (khi gỡ tài khoản): h = sha256("tmn-u|" + tên đăng nhập)
+        if (b.h) {
+          const h = String(b.h);
+          if (!/^[0-9a-f]{64}$/.test(h)) return send(res, 400, { error: "bad_hash" });
+          let n = 0;
+          for (const s of Array.from(SESS.values())) if (s.u && sha("tmn-u|" + s.u) === h) { kick(s.sid); n++; }
+          return send(res, 200, { ok: true, n: n });
+        }
         const sid = String(b.sid || "");
         if (!SID_RE.test(sid)) return send(res, 400, { error: "bad_sid" });
-        const s = SESS.get(sid);
-        KICKED.set(sid, Date.now());
-        SESS.delete(sid);
-        broadcastRaw({ k: "kick", s: sid });
-        addLog({ t: Date.now(), ev: "kick", u: s ? s.u : "", r: s ? s.r : "", v: "", ip: s ? s.ip : "", ua: s ? s.ua : "", by: "vinhtu" });
-        return send(res, 200, { ok: true, found: !!s });
+        return send(res, 200, { ok: true, found: kick(sid) });
       }
       return send(res, 404, { error: "not_found" });
     }
